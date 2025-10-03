@@ -1,0 +1,38 @@
+{
+  "name": "nhl-viewer",
+  "version": "1.0.0",
+  "description": "Terminal-based NHL game viewer with live updates and interactive navigation",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js",
+    "watch": "tsc --watch",
+    "clean": "rimraf dist"
+  },
+  "keywords": [
+    "nhl",
+    "hockey",
+    "terminal",
+    "cli",
+    "sports",
+    "viewer"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "blessed": "^0.1.81",
+    "date-fns": "^2.30.0"
+  },
+  "devDependencies": {
+    "@types/blessed": "^0.1.21",
+    "@types/node": "^20.8.0",
+    "@types/node-fetch": "^2.6.13",
+    "node-fetch": "^2.7.0",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.2.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
