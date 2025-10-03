@@ -33,6 +33,7 @@ export class ScheduleView extends BaseComponent {
       width: '100%-2',
       height: 3,
       content: '',
+      tags: true,
     });
 
     // Games list
@@ -44,6 +45,14 @@ export class ScheduleView extends BaseComponent {
       height: '100%-8',
       label: ' Games ',
       items: [],
+      tags: true,
+      keys: true,
+      scrollable: true,
+      style: {
+        selected: {
+          bg: 'blue'
+        }
+      }
     });
 
     // Status bar
@@ -63,7 +72,7 @@ export class ScheduleView extends BaseComponent {
   }
 
   protected setupEventHandlers(): void {
-    // Date navigation
+    // Date navigation - only on container
     this.container.key(['left', 'h'], () => {
       this.navigateDate(-1);
     });
@@ -72,9 +81,20 @@ export class ScheduleView extends BaseComponent {
       this.navigateDate(1);
     });
 
-    // Game selection
-    this.gamesList.key(['enter'], () => {
+    // Game selection - only on container to avoid conflicts
+    this.container.key(['enter'], () => {
       this.selectGame();
+    });
+
+    // Game list navigation - let blessed handle this natively
+    this.container.key(['up', 'k'], () => {
+      this.gamesList.up(1);
+      this.screen.render();
+    });
+
+    this.container.key(['down', 'j'], () => {
+      this.gamesList.down(1);
+      this.screen.render();
     });
 
     // Refresh
@@ -86,13 +106,19 @@ export class ScheduleView extends BaseComponent {
     this.container.key(['q', 'C-c'], () => {
       process.exit(0);
     });
+
+    // Make sure the container can receive key events
+    this.container.focus();
   }
 
   protected onStateChange(state: AppState): void {
     this.updateDateDisplay(state.selectedDate);
     
     if (state.scheduleData) {
-      this.updateGamesList(state.scheduleData.games);
+      // Find the games for the selected date
+      const selectedWeek = state.scheduleData.gameWeek.find(week => week.date === state.selectedDate);
+      const games = selectedWeek?.games || [];
+      this.updateGamesList(games);
     }
 
     if (state.error) {
@@ -124,8 +150,8 @@ export class ScheduleView extends BaseComponent {
     }
 
     const gameItems = games.map(game => {
-      const awayTeam = game.teams.away.team.abbreviation;
-      const homeTeam = game.teams.home.team.abbreviation;
+      const awayTeam = game.awayTeam.abbrev;
+      const homeTeam = game.homeTeam.abbrev;
       const status = this.getGameStatusDisplay(game);
       const score = this.getScoreDisplay(game);
       
@@ -133,34 +159,49 @@ export class ScheduleView extends BaseComponent {
     });
 
     this.gamesList.setItems(gameItems);
+    this.gamesList.select(0); // Select first item by default
     this.screen.render();
   }
 
   private getGameStatusDisplay(game: Game): string {
-    const gameTime = new Date(game.gameDate);
+    const gameTime = new Date(game.startTimeUTC);
     
-    switch (game.status.abstractGameState) {
-      case 'Preview':
+    switch (game.gameState) {
+      case 'FUT':
         return gameTime.toLocaleTimeString('en-US', {
           hour: 'numeric',
           minute: '2-digit',
           hour12: true,
         });
-      case 'Live':
+      case 'LIVE':
         return '{red-fg}LIVE{/red-fg}';
-      case 'Final':
+      case 'FINAL':
         return '{green-fg}FINAL{/green-fg}';
       default:
-        return game.status.detailedState;
+        return game.gameScheduleState;
     }
   }
 
   private getScoreDisplay(game: Game): string {
-    if (game.status.abstractGameState === 'Preview') {
+    if (game.gameState === 'FUT') {
       return '';
     }
     
-    return `${game.teams.away.score}-${game.teams.home.score}`;
+    // For completed games, use the scores from the API response
+    if (game.gameState === 'FINAL' || game.gameState === 'OFF') {
+      const awayScore = game.awayTeam.score ?? '?';
+      const homeScore = game.homeTeam.score ?? '?';
+      return `${awayScore}-${homeScore}`;
+    }
+    
+    // For live games, show current score if available
+    if (game.gameState === 'LIVE') {
+      const awayScore = game.awayTeam.score ?? 0;
+      const homeScore = game.homeTeam.score ?? 0;
+      return `${awayScore}-${homeScore}`;
+    }
+    
+    return '';
   }
 
   private navigateDate(days: number): void {
@@ -176,12 +217,18 @@ export class ScheduleView extends BaseComponent {
     const selectedIndex = (this.gamesList as any).selected || 0;
     const state = this.stateManager.getState();
     
-    if (state.scheduleData && state.scheduleData.games[selectedIndex]) {
-      const selectedGame = state.scheduleData.games[selectedIndex];
-      this.stateManager.setState({
-        selectedGame,
-        currentView: 'game',
-      });
+    if (state.scheduleData) {
+      // Find the games for the selected date
+      const selectedWeek = state.scheduleData.gameWeek.find(week => week.date === state.selectedDate);
+      const games = selectedWeek?.games || [];
+      
+      if (games.length > 0 && selectedIndex < games.length) {
+        const selectedGame = games[selectedIndex];
+        this.stateManager.setState({
+          selectedGame,
+          currentView: 'game',
+        });
+      }
     }
   }
 
@@ -191,7 +238,16 @@ export class ScheduleView extends BaseComponent {
     this.stateManager.setState({ loading: true, error: null });
     
     try {
-      const scheduleData = await this.apiClient.getSchedule(state.selectedDate);
+      // Use the current schedule (which includes multiple dates) or specific date
+      const today = new Date().toISOString().split('T')[0];
+      let scheduleData;
+      
+      if (state.selectedDate === today) {
+        scheduleData = await this.apiClient.getCurrentSchedule();
+      } else {
+        scheduleData = await this.apiClient.getSchedule(state.selectedDate);
+      }
+      
       this.stateManager.setState({
         scheduleData,
         loading: false,

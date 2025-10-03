@@ -34,6 +34,7 @@ export class GameView extends BaseComponent {
       left: 1,
       width: '100%-2',
       height: 3,
+      tags: true,
     });
 
     // Score and game status
@@ -123,7 +124,9 @@ export class GameView extends BaseComponent {
     }
 
     if (state.liveGameData) {
-      this.updateGameDisplay(state.liveGameData);
+      this.updateGameDisplay(state.liveGameData).catch(error => {
+        console.error('Error updating game display:', error);
+      });
     }
 
     if (state.error) {
@@ -135,60 +138,127 @@ export class GameView extends BaseComponent {
     }
   }
 
-  private updateGameDisplay(gameData: LiveGameData): void {
+  private async updateGameDisplay(gameData: LiveGameData): Promise<void> {
     this.updateHeader(gameData);
-    this.updateScore(gameData);
+    await this.updateScore(gameData);
     this.updateStats(gameData);
     this.updatePlayByPlay(gameData);
   }
 
   private updateHeader(gameData: LiveGameData): void {
-    const awayTeam = gameData.gameData.teams.away.name;
-    const homeTeam = gameData.gameData.teams.home.name;
-    const venue = gameData.gameData.venue.name;
+    const awayTeam = `${gameData.awayTeam.placeName.default} ${gameData.awayTeam.commonName.default}`;
+    const homeTeam = `${gameData.homeTeam.placeName.default} ${gameData.homeTeam.commonName.default}`;
+    const venue = gameData.venue.default;
     
     const content = `{center}${awayTeam} @ ${homeTeam}{/center}\n{center}${venue}{/center}`;
     this.headerBox.setContent(content);
   }
 
-  private updateScore(gameData: LiveGameData): void {
-    const linescore = gameData.liveData.linescore;
-    const awayScore = linescore.teams.away.goals;
-    const homeScore = linescore.teams.home.goals;
-    const awayTeam = gameData.gameData.teams.away.abbreviation;
-    const homeTeam = gameData.gameData.teams.home.abbreviation;
+  private async updateScore(gameData: LiveGameData): Promise<void> {
+    const awayTeam = gameData.awayTeam.abbrev;
+    const homeTeam = gameData.homeTeam.abbrev;
+    
+    let awayScore = 0;
+    let homeScore = 0;
+    
+    // For completed games, try to get boxscore data for accurate scores
+    if (gameData.gameState === 'FINAL' || gameData.gameState === 'OFF') {
+      try {
+        const boxscore = await this.apiClient.getBoxscore(gameData.id);
+        // Extract scores from boxscore if available
+        if (boxscore && boxscore.awayTeam && boxscore.homeTeam) {
+          awayScore = boxscore.awayTeam.score || 0;
+          homeScore = boxscore.homeTeam.score || 0;
+        } else {
+          // Fallback to counting goal plays
+          const goalPlays = gameData.plays.filter(play => play.typeDescKey === 'goal');
+          goalPlays.forEach(goal => {
+            if (goal.details?.eventOwnerTeamId === gameData.awayTeam.id) {
+              awayScore++;
+            } else if (goal.details?.eventOwnerTeamId === gameData.homeTeam.id) {
+              homeScore++;
+            }
+          });
+        }
+      } catch (error) {
+        // Fallback to counting goal plays if boxscore fails
+        const goalPlays = gameData.plays.filter(play => play.typeDescKey === 'goal');
+        goalPlays.forEach(goal => {
+          if (goal.details?.eventOwnerTeamId === gameData.awayTeam.id) {
+            awayScore++;
+          } else if (goal.details?.eventOwnerTeamId === gameData.homeTeam.id) {
+            homeScore++;
+          }
+        });
+      }
+    } else {
+      // For live/future games, count goal plays
+      const goalPlays = gameData.plays.filter(play => play.typeDescKey === 'goal');
+      goalPlays.forEach(goal => {
+        if (goal.details?.eventOwnerTeamId === gameData.awayTeam.id) {
+          awayScore++;
+        } else if (goal.details?.eventOwnerTeamId === gameData.homeTeam.id) {
+          homeScore++;
+        }
+      });
+    }
     
     let content = `${awayTeam}: ${awayScore}\n${homeTeam}: ${homeScore}\n\n`;
     
     // Game status
-    const status = gameData.gameData.status.detailedState;
-    content += `Status: ${status}\n`;
+    content += `Status: ${gameData.gameState}\n`;
     
-    if (gameData.gameData.status.abstractGameState === 'Live') {
-      const period = linescore.currentPeriodOrdinal;
-      const timeRemaining = linescore.currentPeriodTimeRemaining;
-      content += `${period} - ${timeRemaining}`;
+    if (gameData.gameState === 'LIVE' && gameData.clock) {
+      const period = gameData.periodDescriptor.number;
+      const timeRemaining = gameData.clock.timeRemaining;
+      content += `Period ${period} - ${timeRemaining}`;
     }
 
     this.scoreBox.setContent(content);
   }
 
   private updateStats(gameData: LiveGameData): void {
-    const awayStats = gameData.liveData.boxscore.teams.away.teamStats.teamSkaterStats;
-    const homeStats = gameData.liveData.boxscore.teams.home.teamStats.teamSkaterStats;
-    const awayTeam = gameData.gameData.teams.away.abbreviation;
-    const homeTeam = gameData.gameData.teams.home.abbreviation;
+    // Calculate basic stats from plays
+    const shotPlays = gameData.plays.filter(play => 
+      play.typeDescKey === 'shot-on-goal' || play.typeDescKey === 'goal'
+    );
+    const hitPlays = gameData.plays.filter(play => play.typeDescKey === 'hit');
+    const penaltyPlays = gameData.plays.filter(play => play.typeDescKey === 'penalty');
+    
+    let awayShots = 0;
+    let homeShots = 0;
+    let awayHits = 0;
+    let homeHits = 0;
+    let awayPenalties = 0;
+    let homePenalties = 0;
+    
+    shotPlays.forEach(shot => {
+      if (shot.details?.eventOwnerTeamId === gameData.awayTeam.id) awayShots++;
+      else if (shot.details?.eventOwnerTeamId === gameData.homeTeam.id) homeShots++;
+    });
+    
+    hitPlays.forEach(hit => {
+      if (hit.details?.eventOwnerTeamId === gameData.awayTeam.id) awayHits++;
+      else if (hit.details?.eventOwnerTeamId === gameData.homeTeam.id) homeHits++;
+    });
+    
+    penaltyPlays.forEach(penalty => {
+      if (penalty.details?.eventOwnerTeamId === gameData.awayTeam.id) awayPenalties++;
+      else if (penalty.details?.eventOwnerTeamId === gameData.homeTeam.id) homePenalties++;
+    });
+    
+    const awayTeam = gameData.awayTeam.abbrev;
+    const homeTeam = gameData.homeTeam.abbrev;
 
-    let content = `Shots:\n${awayTeam}: ${awayStats.shots}\n${homeTeam}: ${homeStats.shots}\n\n`;
-    content += `Hits:\n${awayTeam}: ${awayStats.hits}\n${homeTeam}: ${homeStats.hits}\n\n`;
-    content += `PP:\n${awayTeam}: ${awayStats.powerPlayGoals}/${awayStats.powerPlayOpportunities}\n`;
-    content += `${homeTeam}: ${homeStats.powerPlayGoals}/${homeStats.powerPlayOpportunities}`;
+    let content = `Shots:\n${awayTeam}: ${awayShots}\n${homeTeam}: ${homeShots}\n\n`;
+    content += `Hits:\n${awayTeam}: ${awayHits}\n${homeTeam}: ${homeHits}\n\n`;
+    content += `Penalties:\n${awayTeam}: ${awayPenalties}\n${homeTeam}: ${homePenalties}`;
 
     this.statsBox.setContent(content);
   }
 
   private updatePlayByPlay(gameData: LiveGameData): void {
-    const plays = gameData.liveData.plays.allPlays;
+    const plays = gameData.plays;
     const playItems = plays.slice(-20).map(play => this.formatPlayEvent(play));
     
     this.playByPlayList.setItems(playItems);
@@ -197,32 +267,44 @@ export class GameView extends BaseComponent {
   }
 
   private formatPlayEvent(play: PlayEvent): string {
-    const period = play.about.periodType === 'REGULAR' 
-      ? play.about.ordinalNum 
-      : play.about.periodType;
+    const period = play.periodDescriptor.periodType === 'REG' 
+      ? `P${play.period}` 
+      : play.periodDescriptor.periodType;
     
-    const time = play.about.periodTime;
-    const event = play.result.event;
-    const description = play.result.description;
+    const time = play.timeInPeriod;
+    const eventType = play.typeDescKey;
     
-    const icon = this.getEventIcon(event);
+    // Create a simple description based on event type
+    let description = eventType.replace(/-/g, ' ').toUpperCase();
+    if (play.details?.playerId) {
+      const player = this.getPlayerName(play.details.playerId, play);
+      if (player) description += ` - ${player}`;
+    }
+    
+    const icon = this.getEventIcon(eventType);
     
     return `${icon} ${period} ${time} - ${description}`;
   }
 
+  private getPlayerName(playerId: number, play: PlayEvent): string {
+    // For now, just return the player ID since we don't have roster data easily accessible
+    // In a full implementation, you'd look up the player from rosterSpots
+    return `Player ${playerId}`;
+  }
+
   private getEventIcon(eventType: string): string {
     const eventIcons: { [key: string]: string } = {
-      'GOAL': '🚨',
-      'SHOT': '🏒',
-      'MISS': '💨',
-      'PENALTY': '⚠️',
-      'FACEOFF': '🔵',
-      'HIT': '💥',
-      'SAVE': '🥅',
-      'BLOCK': '🛡️',
-      'TAKEAWAY': '⚡',
-      'GIVEAWAY': '❌',
-      'STOP': '⏸️',
+      'goal': '🚨',
+      'shot-on-goal': '🏒',
+      'missed-shot': '💨',
+      'penalty': '⚠️',
+      'faceoff': '🔵',
+      'hit': '💥',
+      'save': '🥅',
+      'blocked-shot': '🛡️',
+      'takeaway': '⚡',
+      'giveaway': '❌',
+      'stoppage': '⏸️',
     };
     
     return eventIcons[eventType] || '●';
@@ -236,7 +318,7 @@ export class GameView extends BaseComponent {
     this.stateManager.setState({ loading: true, error: null });
 
     try {
-      const liveGameData = await this.apiClient.getLiveGameData(state.selectedGame.gamePk);
+      const liveGameData = await this.apiClient.getLiveGameData(state.selectedGame.id);
       this.stateManager.setState({
         liveGameData,
         loading: false,
@@ -253,7 +335,7 @@ export class GameView extends BaseComponent {
     // Update every 10 seconds for live games
     this.updateInterval = setInterval(() => {
       const state = this.stateManager.getState();
-      if (state.liveGameData?.gameData.status.abstractGameState === 'Live') {
+      if (state.liveGameData?.gameState === 'LIVE') {
         this.loadGameData();
       }
     }, 10000);
